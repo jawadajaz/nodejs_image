@@ -1,9 +1,12 @@
 const express = require('express');
 const sharp = require('sharp');
 const axios = require('axios');
+const cors = require('cors');
 
 const app = express();
 const PORT = 3000;
+
+app.use(cors());
 
 app.get('/process-image', async (req, res) => {
   const { url, width, quality, format } = req.query;
