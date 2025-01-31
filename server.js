@@ -28,15 +28,19 @@ function ensureMerchantDir(merchantId) {
 
 // Function to save metadata
 function saveMetadata(merchantDir, fileName, metadata) {
-  const metadataPath = path.join(merchantDir, 'metadata.json');
-  let existingMetadata = {};
-  
-  if (fs.existsSync(metadataPath)) {
-    existingMetadata = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
+  try {
+    const metadataPath = path.join(merchantDir, 'metadata.json');
+    let existingMetadata = {};
+    
+    if (fs.existsSync(metadataPath)) {
+      existingMetadata = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
+    }
+    
+    existingMetadata[fileName] = metadata;
+    fs.writeFileSync(metadataPath, JSON.stringify(existingMetadata, null, 2));
+  } catch (error) {
+    console.error('Error saving metadata:', error);
   }
-  
-  existingMetadata[fileName] = metadata;
-  fs.writeFileSync(metadataPath, JSON.stringify(existingMetadata, null, 2));
 }
 
 app.get('/process-image', async (req, res) => {
@@ -47,6 +51,9 @@ app.get('/process-image', async (req, res) => {
   }
 
   try {
+    // Validate URL
+    const validUrl = new URL(url);
+
     const merchantDir = ensureMerchantDir(merchantId);
     const fileName = generateFileName(url, width, quality, format, merchantId);
     const filePath = path.join(merchantDir, fileName);
@@ -60,7 +67,16 @@ app.get('/process-image', async (req, res) => {
     }
 
     // Fetch and process the image
-    const response = await axios.get(url, { responseType: 'arraybuffer' });
+    const response = await axios({
+      method: 'get',
+      url: url,
+      responseType: 'arraybuffer',
+      timeout: 15000, // 15 second timeout
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+      }
+    });
+
     const imageBuffer = Buffer.from(response.data);
 
     // Prepare the Sharp transformation
@@ -68,12 +84,16 @@ app.get('/process-image', async (req, res) => {
 
     // Resize the image if width is provided
     if (width) {
-      transformer = transformer.resize(parseInt(width));
+      const parsedWidth = parseInt(width);
+      if (!isNaN(parsedWidth) && parsedWidth > 0) {
+        transformer = transformer.resize(parsedWidth);
+      }
     }
 
     // Set the image format and quality
+    const parsedQuality = quality ? parseInt(quality) : 80;
     transformer = transformer.toFormat(format, {
-      quality: quality ? parseInt(quality) : 80,
+      quality: Math.min(Math.max(parsedQuality, 1), 100), // Ensure quality is between 1 and 100
     });
 
     // Process the image
@@ -86,7 +106,7 @@ app.get('/process-image', async (req, res) => {
     const metadata = {
       url,
       width: width || 'original',
-      quality: quality || 80,
+      quality: parsedQuality,
       format,
       merchantId,
       createdAt: new Date().toISOString()
@@ -96,8 +116,25 @@ app.get('/process-image', async (req, res) => {
     res.set('Content-Type', `image/${format}`);
     res.send(processedImage);
   } catch (error) {
-    console.error('Error processing image:', error);
-    res.status(500).send('Failed to process the image');
+    console.error('Detailed error:', {
+      message: error.message,
+      stack: error.stack,
+      url: url,
+      merchantId: merchantId,
+      width: width,
+      quality: quality,
+      format: format
+    });
+
+    if (error.response) {
+      return res.status(error.response.status).send(`Failed to fetch image: ${error.message}`);
+    }
+    
+    if (error.code === 'ENOTFOUND' || error.code === 'ETIMEDOUT') {
+      return res.status(404).send('Image URL is not accessible');
+    }
+
+    res.status(500).send(`Failed to process the image: ${error.message}`);
   }
 });
 
