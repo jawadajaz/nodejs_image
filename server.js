@@ -19,7 +19,8 @@ function generateFileName(url, width, quality, format, merchantId) {
 
 // Function to ensure merchant directory exists
 function ensureMerchantDir(merchantId) {
-  const merchantDir = path.join(__dirname, `merchant_${merchantId}`);
+  // Use /tmp directory for Vercel
+  const merchantDir = path.join('/tmp', `merchant_${merchantId}`);
   if (!fs.existsSync(merchantDir)) {
     fs.mkdirSync(merchantDir, { recursive: true });
   }
