@@ -59,7 +59,7 @@ app.get('/process-image', async (req, res) => {
     const fileName = generateFileName(url, width, quality, format, merchantId);
     const filePath = path.join(merchantDir, fileName);
 
-    // Check if file already exists
+    // Check if file already exists in merchant directory
     if (fs.existsSync(filePath)) {
       console.log('Serving cached image:', fileName);
       const imageBuffer = fs.readFileSync(filePath);
@@ -67,23 +67,39 @@ app.get('/process-image', async (req, res) => {
       return res.send(imageBuffer);
     }
 
-    // Fetch and process the image
+    // Check metadata to see if this URL was processed before
+    const metadataPath = path.join(merchantDir, 'metadata.json');
+    if (fs.existsSync(metadataPath)) {
+      const metadata = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
+      const existingEntry = Object.entries(metadata).find(([_, data]) => data.url === url);
+      
+      if (existingEntry) {
+        const [existingFileName, existingData] = existingEntry;
+        const existingFilePath = path.join(merchantDir, existingFileName);
+        
+        if (fs.existsSync(existingFilePath)) {
+          console.log('Serving existing image with same URL:', existingFileName);
+          const imageBuffer = fs.readFileSync(existingFilePath);
+          res.set('Content-Type', `image/${existingData.format}`);
+          return res.send(imageBuffer);
+        }
+      }
+    }
+
+    // If no existing file found, process the new image
     const response = await axios({
       method: 'get',
       url: url,
       responseType: 'arraybuffer',
-      timeout: 15000, // 15 second timeout
+      timeout: 15000,
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
       }
     });
 
     const imageBuffer = Buffer.from(response.data);
-
-    // Prepare the Sharp transformation
     let transformer = sharp(imageBuffer);
 
-    // Resize the image if width is provided
     if (width) {
       const parsedWidth = parseInt(width);
       if (!isNaN(parsedWidth) && parsedWidth > 0) {
@@ -91,13 +107,11 @@ app.get('/process-image', async (req, res) => {
       }
     }
 
-    // Set the image format and quality
     const parsedQuality = quality ? parseInt(quality) : 80;
     transformer = transformer.toFormat(format, {
-      quality: Math.min(Math.max(parsedQuality, 1), 100), // Ensure quality is between 1 and 100
+      quality: Math.min(Math.max(parsedQuality, 1), 100),
     });
 
-    // Process the image
     const processedImage = await transformer.toBuffer();
 
     // Save the processed image
