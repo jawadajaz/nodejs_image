@@ -73,9 +73,11 @@ const optimizeImage = async (buffer, width, quality, format = 'webp') => {
       const parsedWidth = parseInt(width);
       if (!isNaN(parsedWidth) && parsedWidth > 0) {
         console.log('Resizing image to width:', parsedWidth);
-        transformer = transformer.resize(parsedWidth, null, {
-          withoutEnlargement: true,
-          fastShrink: true
+        transformer = transformer.resize({
+          width: parsedWidth,
+          height: null,
+          fit: 'inside',
+          withoutEnlargement: true
         });
       }
     }
@@ -86,6 +88,12 @@ const optimizeImage = async (buffer, width, quality, format = 'webp') => {
       effort: 4, // Balanced compression effort
       strip: true, // Remove metadata
     };
+
+    console.log('Processing image with options:', {
+      width: width ? parseInt(width) : 'original',
+      quality: options.quality,
+      format
+    });
 
     // Apply format conversion
     transformer = transformer.toFormat(format, options);
