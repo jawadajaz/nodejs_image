@@ -112,6 +112,31 @@ app.get('/process-image', async (req, res) => {
   }
 });
 
+// Add route to get current date and time for Asia/Karachi timezone
+app.get('/time/karachi', (req, res) => {
+  try {
+    // Create date object
+    const now = new Date();
+    
+    // Format the date according to Asia/Karachi timezone
+    const karachiTime = now.toLocaleString('en-US', {
+      timeZone: 'Asia/Karachi',
+      dateStyle: 'full',
+      timeStyle: 'long'
+    });
+    
+    // Return the formatted time
+    res.json({
+      timezone: 'Asia/Karachi',
+      datetime: karachiTime,
+      timestamp: now.getTime()
+    });
+  } catch (error) {
+    console.error('Error getting Karachi time:', error.message);
+    res.status(500).send(`Failed to get time: ${error.message}`);
+  }
+});
+
 // Warm up Sharp (pre-initialize)
 sharp({
   create: {
