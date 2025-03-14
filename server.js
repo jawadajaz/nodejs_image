@@ -61,62 +61,50 @@ const optimizeImage = async (buffer, width, quality, format = 'webp') => {
       return buffer;
     }
 
-    console.log('Starting image processing with parameters:', { width, quality, format });
+    let pipeline = sharp(buffer);
+    
+    // Get original metadata
+    const metadata = await pipeline.metadata();
+    console.log('Original dimensions:', {
+      width: metadata.width,
+      height: metadata.height
+    });
 
-    // Create sharp instance with the input buffer
-    const image = sharp(buffer);
-
-    // Get image metadata
-    const metadata = await image.metadata();
-    console.log('Original image metadata:', metadata);
-
-    // Create a new transformer pipeline
-    let transformer = sharp(buffer);
-
-    // Apply resize if width is specified
+    // Handle resize
     if (width) {
       const targetWidth = parseInt(width);
       if (!isNaN(targetWidth) && targetWidth > 0) {
-        console.log(`Applying resize to width: ${targetWidth}`);
-        await transformer.resize(targetWidth, null, {
-          withoutEnlargement: true,
-          fit: sharp.fit.contain
-        });
-        
-        // Verify resize
-        const resizedMetadata = await transformer.metadata();
-        console.log('After resize metadata:', resizedMetadata);
+        console.log(`Attempting resize to width: ${targetWidth}`);
+        pipeline = pipeline.resize(targetWidth);
       }
     }
 
-    // Set quality for compression
+    // Set format and quality
     const targetQuality = quality ? parseInt(quality) : 80;
-    const normalizedQuality = Math.min(Math.max(targetQuality, 1), 100);
-    
-    console.log(`Applying format conversion with quality: ${normalizedQuality}`);
-    
-    // Apply format conversion with quality
-    const formatOptions = {
-      quality: normalizedQuality,
-      effort: 4,
+    console.log(`Setting quality to: ${targetQuality}`);
+
+    // Convert to desired format
+    pipeline = pipeline.toFormat(format, {
+      quality: targetQuality,
       strip: true
-    };
+    });
 
-    // Convert to specified format
-    await transformer.toFormat(format, formatOptions);
-
-    // Generate final buffer
-    console.log('Generating final buffer...');
-    const outputBuffer = await transformer.toBuffer();
+    // Process the image
+    const outputBuffer = await pipeline.toBuffer();
     
-    // Verify final output
-    const finalMetadata = await sharp(outputBuffer).metadata();
-    console.log('Final image metadata:', finalMetadata);
+    // Verify the output
+    const outputImage = sharp(outputBuffer);
+    const outputMetadata = await outputImage.metadata();
+    console.log('Output dimensions:', {
+      width: outputMetadata.width,
+      height: outputMetadata.height,
+      format: outputMetadata.format
+    });
 
     return outputBuffer;
   } catch (error) {
     console.error('Sharp processing error:', error);
-    throw error; // Let the main handler deal with the error
+    throw error;
   }
 };
 
@@ -127,15 +115,19 @@ app.get('/process-image', async (req, res) => {
     return res.status(400).send('Image URL is required');
   }
 
-  console.log('Received request with parameters:', {
+  // Parse and validate parameters
+  const parsedWidth = width ? parseInt(width) : null;
+  const parsedQuality = quality ? parseInt(quality) : null;
+
+  console.log('Processing request:', {
     url,
-    width: width || 'original',
-    quality: quality || 'default',
+    width: parsedWidth,
+    quality: parsedQuality,
     format
   });
 
   try {
-    const cacheKey = getCacheKey(url, width, quality, format);
+    const cacheKey = getCacheKey(url, parsedWidth, parsedQuality, format);
 
     // Check in-memory cache first
     if (imageCache.has(cacheKey)) {
@@ -166,23 +158,25 @@ app.get('/process-image', async (req, res) => {
       return res.send(imageBuffer);
     }
 
-    // Fetch and process image
-    console.log('Fetching image from URL:', url);
+    // Fetch image
+    console.log('Fetching image from:', url);
     const response = await axiosInstance.get(url);
     
     if (!response.data || response.data.length === 0) {
       throw new Error('Empty response from image URL');
     }
 
-    console.log('Image fetched successfully, size:', response.data.length);
-    
-    const processedImage = await optimizeImage(response.data, width, quality, format);
-    
-    if (!processedImage || processedImage.length === 0) {
-      throw new Error('Image processing failed to produce output');
-    }
+    // Process image
+    const processedImage = await optimizeImage(
+      response.data,
+      parsedWidth,
+      parsedQuality,
+      format
+    );
 
-    console.log('Image processed successfully, size:', processedImage.length);
+    if (!processedImage || processedImage.length === 0) {
+      throw new Error('Image processing failed');
+    }
 
     // Update cache
     imageCache.set(cacheKey, processedImage);
@@ -194,6 +188,7 @@ app.get('/process-image', async (req, res) => {
     // Save to temp directory
     fs.writeFileSync(tempFile, processedImage);
 
+    // Send response
     res.set('Content-Type', `image/${format}`);
     res.set('X-Cache', 'MISS');
     res.send(processedImage);
