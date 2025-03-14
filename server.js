@@ -61,11 +61,24 @@ const optimizeImage = async (buffer, width, quality, format = 'webp') => {
       return buffer;
     }
 
-    const transformer = sharp(buffer, {
+    // Create the initial transformer
+    let transformer = sharp(buffer, {
       failOnError: false,
       limitInputPixels: 50000000, // Limit input size
       density: 72 // Optimize for web
     });
+
+    // Handle width parameter first
+    if (width) {
+      const parsedWidth = parseInt(width);
+      if (!isNaN(parsedWidth) && parsedWidth > 0) {
+        console.log('Resizing image to width:', parsedWidth);
+        transformer = transformer.resize(parsedWidth, null, {
+          withoutEnlargement: true,
+          fastShrink: true
+        });
+      }
+    }
 
     // Set optimized defaults
     const options = {
@@ -74,19 +87,11 @@ const optimizeImage = async (buffer, width, quality, format = 'webp') => {
       strip: true, // Remove metadata
     };
 
-    if (width) {
-      const parsedWidth = parseInt(width);
-      if (!isNaN(parsedWidth) && parsedWidth > 0) {
-        transformer.resize(parsedWidth, null, {
-          withoutEnlargement: true,
-          fastShrink: true
-        });
-      }
-    }
+    // Apply format conversion
+    transformer = transformer.toFormat(format, options);
 
-    return transformer
-      .toFormat(format, options)
-      .toBuffer();
+    // Convert to buffer
+    return transformer.toBuffer();
   } catch (error) {
     console.error('Sharp processing error:', error);
     // Return original buffer if processing fails
