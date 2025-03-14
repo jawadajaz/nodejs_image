@@ -1,27 +1,5 @@
 const express = require('express');
-// Configure Sharp for serverless environment
-process.env.SHARP_IGNORE_GLOBAL_LIBVIPS = 'true';
-
-// Try to load Sharp with fallback
-let sharp;
-try {
-  sharp = require('sharp');
-  // Disable Sharp cache for serverless environment
-  sharp.cache(false);
-  // Limit concurrency to avoid memory issues
-  sharp.concurrency(1);
-} catch (error) {
-  console.error('Warning: Sharp module failed to load:', error);
-  // Create a minimal fallback implementation
-  sharp = {
-    cache: () => {},
-    concurrency: () => {},
-    create: () => ({
-      jpeg: () => ({ toBuffer: () => Promise.resolve(Buffer.from([])) })
-    })
-  };
-}
-
+const Jimp = require('jimp');
 const axios = require('axios');
 const cors = require('cors');
 const path = require('path');
@@ -29,7 +7,7 @@ const fs = require('fs');
 const crypto = require('crypto');
 const { DateTime } = require('luxon');
 
-// Cache axios instances and sharp pipeline
+// Cache axios instances
 const axiosInstance = axios.create({
   timeout: 10000,
   responseType: 'arraybuffer',
@@ -52,58 +30,51 @@ const CACHE_SIZE = 100; // Adjust based on your needs
 const getCacheKey = (url, width, quality, format) => 
   crypto.createHash('md5').update(`${url}-${width}-${quality}-${format}`).digest('hex');
 
-// Optimize sharp pipeline with fallback
+// Optimize image using Jimp
 const optimizeImage = async (buffer, width, quality, format = 'webp') => {
   try {
-    // If Sharp is not properly loaded, just return the original buffer
-    if (!sharp.resize) {
-      console.log('Sharp not available, returning original image');
-      return buffer;
-    }
+    console.log('Starting image processing with parameters:', { width, quality, format });
 
-    let pipeline = sharp(buffer);
+    // Read image from buffer
+    const image = await Jimp.read(buffer);
     
-    // Get original metadata
-    const metadata = await pipeline.metadata();
+    // Log original dimensions
     console.log('Original dimensions:', {
-      width: metadata.width,
-      height: metadata.height
+      width: image.getWidth(),
+      height: image.getHeight()
     });
 
     // Handle resize
     if (width) {
       const targetWidth = parseInt(width);
       if (!isNaN(targetWidth) && targetWidth > 0) {
-        console.log(`Attempting resize to width: ${targetWidth}`);
-        pipeline = pipeline.resize(targetWidth);
+        console.log(`Resizing to width: ${targetWidth}`);
+        // Resize maintaining aspect ratio
+        image.resize(targetWidth, Jimp.AUTO);
       }
     }
 
-    // Set format and quality
+    // Set quality (Jimp uses 0-100)
     const targetQuality = quality ? parseInt(quality) : 80;
-    console.log(`Setting quality to: ${targetQuality}`);
+    const normalizedQuality = Math.min(Math.max(targetQuality, 1), 100);
+    console.log(`Setting quality to: ${normalizedQuality}`);
 
-    // Convert to desired format
-    pipeline = pipeline.toFormat(format, {
-      quality: targetQuality,
-      strip: true
-    });
+    // Convert to buffer with specified format and quality
+    const outputBuffer = await image
+      .quality(normalizedQuality)
+      .getBufferAsync(Jimp.MIME_WEBP);
 
-    // Process the image
-    const outputBuffer = await pipeline.toBuffer();
-    
-    // Verify the output
-    const outputImage = sharp(outputBuffer);
-    const outputMetadata = await outputImage.metadata();
-    console.log('Output dimensions:', {
-      width: outputMetadata.width,
-      height: outputMetadata.height,
-      format: outputMetadata.format
+    // Log final dimensions
+    const finalImage = await Jimp.read(outputBuffer);
+    console.log('Final dimensions:', {
+      width: finalImage.getWidth(),
+      height: finalImage.getHeight(),
+      format: 'webp'
     });
 
     return outputBuffer;
   } catch (error) {
-    console.error('Sharp processing error:', error);
+    console.error('Image processing error:', error);
     throw error;
   }
 };
@@ -133,7 +104,7 @@ app.get('/process-image', async (req, res) => {
     if (imageCache.has(cacheKey)) {
       console.log('Serving from memory cache');
       const cachedImage = imageCache.get(cacheKey);
-      res.set('Content-Type', `image/${format}`);
+      res.set('Content-Type', 'image/webp');
       res.set('X-Cache', 'HIT');
       return res.send(cachedImage);
     }
@@ -146,14 +117,14 @@ app.get('/process-image', async (req, res) => {
       fs.mkdirSync(tempDir, { recursive: true });
     }
     
-    const tempFile = path.join(tempDir, `${cacheKey}.${format}`);
+    const tempFile = path.join(tempDir, `${cacheKey}.webp`);
     
     // Check temp directory cache
     if (fs.existsSync(tempFile)) {
       console.log('Serving from disk cache');
       const imageBuffer = fs.readFileSync(tempFile);
       imageCache.set(cacheKey, imageBuffer);
-      res.set('Content-Type', `image/${format}`);
+      res.set('Content-Type', 'image/webp');
       res.set('X-Cache', 'DISK_HIT');
       return res.send(imageBuffer);
     }
@@ -189,7 +160,7 @@ app.get('/process-image', async (req, res) => {
     fs.writeFileSync(tempFile, processedImage);
 
     // Send response
-    res.set('Content-Type', `image/${format}`);
+    res.set('Content-Type', 'image/webp');
     res.set('X-Cache', 'MISS');
     res.send(processedImage);
 
@@ -207,18 +178,6 @@ app.get('/current-time', (req, res) => {
     time: currentTime.toFormat('HH:mm:ss')
   });
 });
-
-// Only warm up Sharp if it's properly loaded
-if (sharp.resize) {
-  sharp({
-    create: {
-      width: 1,
-      height: 1,
-      channels: 4,
-      background: { r: 0, g: 0, b: 0, alpha: 0 }
-    }
-  }).jpeg().toBuffer();
-}
 
 // For Vercel serverless, we need to export the app
 if (process.env.VERCEL) {
