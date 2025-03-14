@@ -1,6 +1,8 @@
 const express = require('express');
 // Configure Sharp for serverless environment
 process.env.SHARP_IGNORE_GLOBAL_LIBVIPS = 'true';
+// Downgrade Sharp to a version known to work with Vercel
+// We'll use version 0.32.6 which has been reported to work well
 const sharp = require('sharp');
 const axios = require('axios');
 const cors = require('cors');
@@ -151,6 +153,31 @@ app.get('/health', (req, res) => {
 app.use((err, req, res, next) => {
   console.error('Server error:', err);
   res.status(500).send('Internal Server Error');
+});
+
+// Add this route right after your app declaration
+app.get('/time/karachi', (req, res) => {
+  try {
+    // Create date object
+    const now = new Date();
+    
+    // Format the date according to Asia/Karachi timezone
+    const karachiTime = now.toLocaleString('en-US', {
+      timeZone: 'Asia/Karachi',
+      dateStyle: 'full',
+      timeStyle: 'long'
+    });
+    
+    // Return the formatted time
+    res.json({
+      timezone: 'Asia/Karachi',
+      datetime: karachiTime,
+      timestamp: now.getTime()
+    });
+  } catch (error) {
+    console.error('Error getting Karachi time:', error.message);
+    res.status(500).send(`Failed to get time: ${error.message}`);
+  }
 });
 
 // For Vercel serverless, we need to export the app
