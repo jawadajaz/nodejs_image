@@ -1,32 +1,11 @@
 const express = require('express');
-// Configure Sharp for serverless environment
-process.env.SHARP_IGNORE_GLOBAL_LIBVIPS = 'true';
-
-// Try to load Sharp with fallback
-let sharp;
-try {
-  sharp = require('sharp');
-  // Disable Sharp cache for serverless environment
-  sharp.cache(false);
-  // Limit concurrency to avoid memory issues
-  sharp.concurrency(1);
-} catch (error) {
-  console.error('Warning: Sharp module failed to load:', error);
-  // Create a minimal fallback implementation
-  sharp = {
-    cache: () => {},
-    concurrency: () => {},
-    create: () => ({
-      jpeg: () => ({ toBuffer: () => Promise.resolve(Buffer.from([])) })
-    })
-  };
-}
-
+const sharp = require('sharp');
 const axios = require('axios');
 const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
+const { DateTime } = require('luxon');
 
 // Cache axios instances and sharp pipeline
 const axiosInstance = axios.create({
@@ -51,46 +30,33 @@ const CACHE_SIZE = 100; // Adjust based on your needs
 const getCacheKey = (url, width, quality, format) => 
   crypto.createHash('md5').update(`${url}-${width}-${quality}-${format}`).digest('hex');
 
-// Modify the optimizeImage function to handle serverless environment better
+// Optimize sharp pipeline
 const optimizeImage = async (buffer, width, quality, format = 'webp') => {
-  try {
-    // If Sharp is not properly loaded, just return the original buffer
-    if (!sharp.resize) {
-      console.log('Sharp not available, returning original image');
-      return buffer;
+  const transformer = sharp(buffer, {
+    failOnError: false,
+    density: 72 // Optimize for web
+  });
+
+  // Set optimized defaults
+  const options = {
+    quality: quality ? Math.min(Math.max(parseInt(quality), 1), 100) : 80,
+    effort: 4, // Balanced compression effort
+    strip: true, // Remove metadata
+  };
+
+  if (width) {
+    const parsedWidth = parseInt(width);
+    if (!isNaN(parsedWidth) && parsedWidth > 0) {
+      transformer.resize(parsedWidth, null, {
+        withoutEnlargement: true,
+        fastShrink: true
+      });
     }
-
-    const transformer = sharp(buffer, {
-      failOnError: false,
-      limitInputPixels: 50000000, // Limit input size
-      density: 72 // Optimize for web
-    });
-
-    // Set optimized defaults
-    const options = {
-      quality: quality ? Math.min(Math.max(parseInt(quality), 1), 100) : 80,
-      effort: 4, // Balanced compression effort
-      strip: true, // Remove metadata
-    };
-
-    if (width) {
-      const parsedWidth = parseInt(width);
-      if (!isNaN(parsedWidth) && parsedWidth > 0) {
-        transformer.resize(parsedWidth, null, {
-          withoutEnlargement: true,
-          fastShrink: true
-        });
-      }
-    }
-
-    return transformer
-      .toFormat(format, options)
-      .toBuffer();
-  } catch (error) {
-    console.error('Sharp processing error:', error);
-    // Return original buffer if processing fails
-    return buffer;
   }
+
+  return transformer
+    .toFormat(format, options)
+    .toBuffer();
 };
 
 app.get('/process-image', async (req, res) => {
@@ -111,17 +77,10 @@ app.get('/process-image', async (req, res) => {
       return res.send(cachedImage);
     }
 
-    // For serverless, use /tmp directory which is writable
-    const tempDir = process.env.VERCEL ? '/tmp' : path.join(__dirname, 'tmp');
-    
-    // Ensure temp directory exists
-    if (!fs.existsSync(tempDir)) {
-      fs.mkdirSync(tempDir, { recursive: true });
-    }
-    
+    // Check temp directory cache
+    const tempDir = '/tmp';
     const tempFile = path.join(tempDir, `${cacheKey}.${format}`);
     
-    // Check temp directory cache
     if (fs.existsSync(tempFile)) {
       const imageBuffer = fs.readFileSync(tempFile);
       imageCache.set(cacheKey, imageBuffer);
@@ -150,72 +109,30 @@ app.get('/process-image', async (req, res) => {
 
   } catch (error) {
     console.error('Error:', error.message);
-    // If Sharp is not available, try to proxy the original image
-    try {
-      const response = await axiosInstance.get(url);
-      res.set('Content-Type', `image/${format}`);
-      res.set('X-Cache', 'PROXY');
-      res.send(response.data);
-    } catch (proxyError) {
-      res.status(500).send(`Failed to process image: ${error.message}`);
-    }
+    res.status(500).send(`Failed to process image: ${error.message}`);
   }
 });
 
-// Only warm up Sharp if it's properly loaded
-if (sharp.resize) {
-  sharp({
-    create: {
-      width: 1,
-      height: 1,
-      channels: 4,
-      background: { r: 0, g: 0, b: 0, alpha: 0 }
-    }
-  }).jpeg().toBuffer();
-}
+app.get('/current-time', (req, res) => {
+  const currentTime = DateTime.now().setZone('Asia/Karachi');
 
-// Add a health check endpoint
-app.get('/health', (req, res) => {
-  res.status(200).send('OK');
-});
-
-// Add error handling middleware
-app.use((err, req, res, next) => {
-  console.error('Server error:', err);
-  res.status(500).send('Internal Server Error');
-});
-
-// Add this route right after your app declaration
-app.get('/time/karachi', (req, res) => {
-  try {
-    // Create date object
-    const now = new Date();
-    
-    // Format the date according to Asia/Karachi timezone
-    const karachiTime = now.toLocaleString('en-US', {
-      timeZone: 'Asia/Karachi',
-      dateStyle: 'full',
-      timeStyle: 'long'
-    });
-    
-    // Return the formatted time
-    res.json({
-      timezone: 'Asia/Karachi',
-      datetime: karachiTime,
-      timestamp: now.getTime()
-    });
-  } catch (error) {
-    console.error('Error getting Karachi time:', error.message);
-    res.status(500).send(`Failed to get time: ${error.message}`);
-  }
-});
-
-// For Vercel serverless, we need to export the app
-if (process.env.VERCEL) {
-  module.exports = app;
-} else {
-  // Only listen on a port when not on Vercel
-  app.listen(PORT, () => {
-    console.log(`Optimized image processing server running at http://localhost:${PORT}`);
+  res.json({
+    date: currentTime.toFormat('dd-MM-yyyy'),
+    time: currentTime.toFormat('HH:mm:ss')
   });
-}
+});
+
+
+// Warm up Sharp (pre-initialize)
+sharp({
+  create: {
+    width: 1,
+    height: 1,
+    channels: 4,
+    background: { r: 0, g: 0, b: 0, alpha: 0 }
+  }
+}).jpeg().toBuffer();
+
+app.listen(PORT, () => {
+  console.log(`Optimized image processing server running at http://localhost:${PORT}`);
+});
