@@ -61,49 +61,62 @@ const optimizeImage = async (buffer, width, quality, format = 'webp') => {
       return buffer;
     }
 
-    // Create the initial transformer
-    let transformer = sharp(buffer, {
-      failOnError: false,
-      limitInputPixels: 50000000, // Limit input size
-      density: 72 // Optimize for web
-    });
+    console.log('Starting image processing with parameters:', { width, quality, format });
 
-    // Handle width parameter first
+    // Create sharp instance with the input buffer
+    const image = sharp(buffer);
+
+    // Get image metadata
+    const metadata = await image.metadata();
+    console.log('Original image metadata:', metadata);
+
+    // Create a new transformer pipeline
+    let transformer = sharp(buffer);
+
+    // Apply resize if width is specified
     if (width) {
-      const parsedWidth = parseInt(width);
-      if (!isNaN(parsedWidth) && parsedWidth > 0) {
-        console.log('Resizing image to width:', parsedWidth);
-        transformer = transformer.resize({
-          width: parsedWidth,
-          height: null,
-          fit: 'inside',
-          withoutEnlargement: true
+      const targetWidth = parseInt(width);
+      if (!isNaN(targetWidth) && targetWidth > 0) {
+        console.log(`Applying resize to width: ${targetWidth}`);
+        await transformer.resize(targetWidth, null, {
+          withoutEnlargement: true,
+          fit: sharp.fit.contain
         });
+        
+        // Verify resize
+        const resizedMetadata = await transformer.metadata();
+        console.log('After resize metadata:', resizedMetadata);
       }
     }
 
-    // Set optimized defaults
-    const options = {
-      quality: quality ? Math.min(Math.max(parseInt(quality), 1), 100) : 80,
-      effort: 4, // Balanced compression effort
-      strip: true, // Remove metadata
+    // Set quality for compression
+    const targetQuality = quality ? parseInt(quality) : 80;
+    const normalizedQuality = Math.min(Math.max(targetQuality, 1), 100);
+    
+    console.log(`Applying format conversion with quality: ${normalizedQuality}`);
+    
+    // Apply format conversion with quality
+    const formatOptions = {
+      quality: normalizedQuality,
+      effort: 4,
+      strip: true
     };
 
-    console.log('Processing image with options:', {
-      width: width ? parseInt(width) : 'original',
-      quality: options.quality,
-      format
-    });
+    // Convert to specified format
+    await transformer.toFormat(format, formatOptions);
 
-    // Apply format conversion
-    transformer = transformer.toFormat(format, options);
+    // Generate final buffer
+    console.log('Generating final buffer...');
+    const outputBuffer = await transformer.toBuffer();
+    
+    // Verify final output
+    const finalMetadata = await sharp(outputBuffer).metadata();
+    console.log('Final image metadata:', finalMetadata);
 
-    // Convert to buffer
-    return transformer.toBuffer();
+    return outputBuffer;
   } catch (error) {
     console.error('Sharp processing error:', error);
-    // Return original buffer if processing fails
-    return buffer;
+    throw error; // Let the main handler deal with the error
   }
 };
 
@@ -114,11 +127,19 @@ app.get('/process-image', async (req, res) => {
     return res.status(400).send('Image URL is required');
   }
 
+  console.log('Received request with parameters:', {
+    url,
+    width: width || 'original',
+    quality: quality || 'default',
+    format
+  });
+
   try {
     const cacheKey = getCacheKey(url, width, quality, format);
 
     // Check in-memory cache first
     if (imageCache.has(cacheKey)) {
+      console.log('Serving from memory cache');
       const cachedImage = imageCache.get(cacheKey);
       res.set('Content-Type', `image/${format}`);
       res.set('X-Cache', 'HIT');
@@ -137,6 +158,7 @@ app.get('/process-image', async (req, res) => {
     
     // Check temp directory cache
     if (fs.existsSync(tempFile)) {
+      console.log('Serving from disk cache');
       const imageBuffer = fs.readFileSync(tempFile);
       imageCache.set(cacheKey, imageBuffer);
       res.set('Content-Type', `image/${format}`);
@@ -145,8 +167,22 @@ app.get('/process-image', async (req, res) => {
     }
 
     // Fetch and process image
+    console.log('Fetching image from URL:', url);
     const response = await axiosInstance.get(url);
+    
+    if (!response.data || response.data.length === 0) {
+      throw new Error('Empty response from image URL');
+    }
+
+    console.log('Image fetched successfully, size:', response.data.length);
+    
     const processedImage = await optimizeImage(response.data, width, quality, format);
+    
+    if (!processedImage || processedImage.length === 0) {
+      throw new Error('Image processing failed to produce output');
+    }
+
+    console.log('Image processed successfully, size:', processedImage.length);
 
     // Update cache
     imageCache.set(cacheKey, processedImage);
@@ -163,16 +199,8 @@ app.get('/process-image', async (req, res) => {
     res.send(processedImage);
 
   } catch (error) {
-    console.error('Error:', error.message);
-    // If Sharp is not available, try to proxy the original image
-    try {
-      const response = await axiosInstance.get(url);
-      res.set('Content-Type', `image/${format}`);
-      res.set('X-Cache', 'PROXY');
-      res.send(response.data);
-    } catch (proxyError) {
-      res.status(500).send(`Failed to process image: ${error.message}`);
-    }
+    console.error('Error processing image:', error);
+    res.status(500).send(`Failed to process image: ${error.message}`);
   }
 });
 
