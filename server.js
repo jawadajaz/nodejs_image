@@ -1,19 +1,32 @@
 const express = require('express');
 // Configure Sharp for serverless environment
 process.env.SHARP_IGNORE_GLOBAL_LIBVIPS = 'true';
-// Downgrade Sharp to a version known to work with Vercel
-// We'll use version 0.32.6 which has been reported to work well
-const sharp = require('sharp');
+
+// Try to load Sharp with fallback
+let sharp;
+try {
+  sharp = require('sharp');
+  // Disable Sharp cache for serverless environment
+  sharp.cache(false);
+  // Limit concurrency to avoid memory issues
+  sharp.concurrency(1);
+} catch (error) {
+  console.error('Warning: Sharp module failed to load:', error);
+  // Create a minimal fallback implementation
+  sharp = {
+    cache: () => {},
+    concurrency: () => {},
+    create: () => ({
+      jpeg: () => ({ toBuffer: () => Promise.resolve(Buffer.from([])) })
+    })
+  };
+}
+
 const axios = require('axios');
 const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
-
-// Disable Sharp cache for serverless environment
-sharp.cache(false);
-// Limit concurrency to avoid memory issues
-sharp.concurrency(1);
 
 // Cache axios instances and sharp pipeline
 const axiosInstance = axios.create({
@@ -41,6 +54,12 @@ const getCacheKey = (url, width, quality, format) =>
 // Modify the optimizeImage function to handle serverless environment better
 const optimizeImage = async (buffer, width, quality, format = 'webp') => {
   try {
+    // If Sharp is not properly loaded, just return the original buffer
+    if (!sharp.resize) {
+      console.log('Sharp not available, returning original image');
+      return buffer;
+    }
+
     const transformer = sharp(buffer, {
       failOnError: false,
       limitInputPixels: 50000000, // Limit input size
@@ -69,7 +88,8 @@ const optimizeImage = async (buffer, width, quality, format = 'webp') => {
       .toBuffer();
   } catch (error) {
     console.error('Sharp processing error:', error);
-    throw new Error(`Image processing failed: ${error.message}`);
+    // Return original buffer if processing fails
+    return buffer;
   }
 };
 
@@ -130,19 +150,29 @@ app.get('/process-image', async (req, res) => {
 
   } catch (error) {
     console.error('Error:', error.message);
-    res.status(500).send(`Failed to process image: ${error.message}`);
+    // If Sharp is not available, try to proxy the original image
+    try {
+      const response = await axiosInstance.get(url);
+      res.set('Content-Type', `image/${format}`);
+      res.set('X-Cache', 'PROXY');
+      res.send(response.data);
+    } catch (proxyError) {
+      res.status(500).send(`Failed to process image: ${error.message}`);
+    }
   }
 });
 
-// Warm up Sharp (pre-initialize)
-sharp({
-  create: {
-    width: 1,
-    height: 1,
-    channels: 4,
-    background: { r: 0, g: 0, b: 0, alpha: 0 }
-  }
-}).jpeg().toBuffer();
+// Only warm up Sharp if it's properly loaded
+if (sharp.resize) {
+  sharp({
+    create: {
+      width: 1,
+      height: 1,
+      channels: 4,
+      background: { r: 0, g: 0, b: 0, alpha: 0 }
+    }
+  }).jpeg().toBuffer();
+}
 
 // Add a health check endpoint
 app.get('/health', (req, res) => {
