@@ -1,10 +1,17 @@
 const express = require('express');
+// Configure Sharp for serverless environment
+process.env.SHARP_IGNORE_GLOBAL_LIBVIPS = 'true';
 const sharp = require('sharp');
 const axios = require('axios');
 const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
+
+// Disable Sharp cache for serverless environment
+sharp.cache(false);
+// Limit concurrency to avoid memory issues
+sharp.concurrency(1);
 
 // Cache axios instances and sharp pipeline
 const axiosInstance = axios.create({
