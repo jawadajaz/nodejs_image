@@ -1,5 +1,5 @@
 const express = require('express');
-const Jimp = require('jimp');
+const sharp = require('sharp');
 const axios = require('axios');
 const cors = require('cors');
 const path = require('path');
@@ -30,18 +30,19 @@ const CACHE_SIZE = 100; // Adjust based on your needs
 const getCacheKey = (url, width, quality, format) => 
   crypto.createHash('md5').update(`${url}-${width}-${quality}-${format}`).digest('hex');
 
-// Optimize image using Jimp
+// Optimize image using Sharp
 const optimizeImage = async (buffer, width, quality, format = 'webp') => {
   try {
     console.log('Starting image processing with parameters:', { width, quality, format });
 
-    // Read image from buffer
-    const image = await Jimp.read(buffer);
-    
-    // Log original dimensions
+    // Create Sharp instance
+    let pipeline = sharp(buffer);
+
+    // Get original metadata
+    const metadata = await pipeline.metadata();
     console.log('Original dimensions:', {
-      width: image.getWidth(),
-      height: image.getHeight()
+      width: metadata.width,
+      height: metadata.height
     });
 
     // Handle resize
@@ -49,27 +50,34 @@ const optimizeImage = async (buffer, width, quality, format = 'webp') => {
       const targetWidth = parseInt(width);
       if (!isNaN(targetWidth) && targetWidth > 0) {
         console.log(`Resizing to width: ${targetWidth}`);
-        // Resize maintaining aspect ratio
-        image.resize(targetWidth, Jimp.AUTO);
+        pipeline = pipeline.resize(targetWidth, null, {
+          withoutEnlargement: true,
+          fit: 'inside'
+        });
       }
     }
 
-    // Set quality (Jimp uses 0-100)
+    // Set quality
     const targetQuality = quality ? parseInt(quality) : 80;
     const normalizedQuality = Math.min(Math.max(targetQuality, 1), 100);
     console.log(`Setting quality to: ${normalizedQuality}`);
 
-    // Convert to buffer with specified format and quality
-    const outputBuffer = await image
-      .quality(normalizedQuality)
-      .getBufferAsync(Jimp.MIME_WEBP);
+    // Convert to WebP with quality settings
+    pipeline = pipeline.webp({
+      quality: normalizedQuality,
+      effort: 4
+    });
 
-    // Log final dimensions
-    const finalImage = await Jimp.read(outputBuffer);
+    // Process the image
+    const outputBuffer = await pipeline.toBuffer();
+
+    // Verify final output
+    const finalImage = sharp(outputBuffer);
+    const finalMetadata = await finalImage.metadata();
     console.log('Final dimensions:', {
-      width: finalImage.getWidth(),
-      height: finalImage.getHeight(),
-      format: 'webp'
+      width: finalMetadata.width,
+      height: finalMetadata.height,
+      format: finalMetadata.format
     });
 
     return outputBuffer;
