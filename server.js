@@ -182,8 +182,7 @@ app.get('/current-time', (req, res) => {
   const currentTime = DateTime.now().setZone('Asia/Karachi');
 
   res.json({
-    date: currentTime.toFormat('dd-MM-yyyy'),
-    time: currentTime.toFormat('HH:mm:ss')
+    datetime: currentTime.toFormat('EEE MMM dd yyyy HH:mm:ss \'GMT\'Z (z)')
   });
 });
 
