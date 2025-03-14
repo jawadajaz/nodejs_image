@@ -1,5 +1,27 @@
 const express = require('express');
-const sharp = require('sharp');
+// Configure Sharp for serverless environment
+process.env.SHARP_IGNORE_GLOBAL_LIBVIPS = 'true';
+
+// Try to load Sharp with fallback
+let sharp;
+try {
+  sharp = require('sharp');
+  // Disable Sharp cache for serverless environment
+  sharp.cache(false);
+  // Limit concurrency to avoid memory issues
+  sharp.concurrency(1);
+} catch (error) {
+  console.error('Warning: Sharp module failed to load:', error);
+  // Create a minimal fallback implementation
+  sharp = {
+    cache: () => {},
+    concurrency: () => {},
+    create: () => ({
+      jpeg: () => ({ toBuffer: () => Promise.resolve(Buffer.from([])) })
+    })
+  };
+}
+
 const axios = require('axios');
 const cors = require('cors');
 const path = require('path');
@@ -30,33 +52,46 @@ const CACHE_SIZE = 100; // Adjust based on your needs
 const getCacheKey = (url, width, quality, format) => 
   crypto.createHash('md5').update(`${url}-${width}-${quality}-${format}`).digest('hex');
 
-// Optimize sharp pipeline
+// Optimize sharp pipeline with fallback
 const optimizeImage = async (buffer, width, quality, format = 'webp') => {
-  const transformer = sharp(buffer, {
-    failOnError: false,
-    density: 72 // Optimize for web
-  });
-
-  // Set optimized defaults
-  const options = {
-    quality: quality ? Math.min(Math.max(parseInt(quality), 1), 100) : 80,
-    effort: 4, // Balanced compression effort
-    strip: true, // Remove metadata
-  };
-
-  if (width) {
-    const parsedWidth = parseInt(width);
-    if (!isNaN(parsedWidth) && parsedWidth > 0) {
-      transformer.resize(parsedWidth, null, {
-        withoutEnlargement: true,
-        fastShrink: true
-      });
+  try {
+    // If Sharp is not properly loaded, just return the original buffer
+    if (!sharp.resize) {
+      console.log('Sharp not available, returning original image');
+      return buffer;
     }
-  }
 
-  return transformer
-    .toFormat(format, options)
-    .toBuffer();
+    const transformer = sharp(buffer, {
+      failOnError: false,
+      limitInputPixels: 50000000, // Limit input size
+      density: 72 // Optimize for web
+    });
+
+    // Set optimized defaults
+    const options = {
+      quality: quality ? Math.min(Math.max(parseInt(quality), 1), 100) : 80,
+      effort: 4, // Balanced compression effort
+      strip: true, // Remove metadata
+    };
+
+    if (width) {
+      const parsedWidth = parseInt(width);
+      if (!isNaN(parsedWidth) && parsedWidth > 0) {
+        transformer.resize(parsedWidth, null, {
+          withoutEnlargement: true,
+          fastShrink: true
+        });
+      }
+    }
+
+    return transformer
+      .toFormat(format, options)
+      .toBuffer();
+  } catch (error) {
+    console.error('Sharp processing error:', error);
+    // Return original buffer if processing fails
+    return buffer;
+  }
 };
 
 app.get('/process-image', async (req, res) => {
@@ -77,10 +112,17 @@ app.get('/process-image', async (req, res) => {
       return res.send(cachedImage);
     }
 
-    // Check temp directory cache
-    const tempDir = '/tmp';
+    // For serverless, use /tmp directory which is writable
+    const tempDir = process.env.VERCEL ? '/tmp' : path.join(__dirname, 'tmp');
+    
+    // Ensure temp directory exists
+    if (!fs.existsSync(tempDir)) {
+      fs.mkdirSync(tempDir, { recursive: true });
+    }
+    
     const tempFile = path.join(tempDir, `${cacheKey}.${format}`);
     
+    // Check temp directory cache
     if (fs.existsSync(tempFile)) {
       const imageBuffer = fs.readFileSync(tempFile);
       imageCache.set(cacheKey, imageBuffer);
@@ -109,7 +151,15 @@ app.get('/process-image', async (req, res) => {
 
   } catch (error) {
     console.error('Error:', error.message);
-    res.status(500).send(`Failed to process image: ${error.message}`);
+    // If Sharp is not available, try to proxy the original image
+    try {
+      const response = await axiosInstance.get(url);
+      res.set('Content-Type', `image/${format}`);
+      res.set('X-Cache', 'PROXY');
+      res.send(response.data);
+    } catch (proxyError) {
+      res.status(500).send(`Failed to process image: ${error.message}`);
+    }
   }
 });
 
@@ -122,17 +172,24 @@ app.get('/current-time', (req, res) => {
   });
 });
 
+// Only warm up Sharp if it's properly loaded
+if (sharp.resize) {
+  sharp({
+    create: {
+      width: 1,
+      height: 1,
+      channels: 4,
+      background: { r: 0, g: 0, b: 0, alpha: 0 }
+    }
+  }).jpeg().toBuffer();
+}
 
-// Warm up Sharp (pre-initialize)
-sharp({
-  create: {
-    width: 1,
-    height: 1,
-    channels: 4,
-    background: { r: 0, g: 0, b: 0, alpha: 0 }
-  }
-}).jpeg().toBuffer();
-
-app.listen(PORT, () => {
-  console.log(`Optimized image processing server running at http://localhost:${PORT}`);
-});
+// For Vercel serverless, we need to export the app
+if (process.env.VERCEL) {
+  module.exports = app;
+} else {
+  // Only listen on a port when not on Vercel
+  app.listen(PORT, () => {
+    console.log(`Optimized image processing server running at http://localhost:${PORT}`);
+  });
+}
